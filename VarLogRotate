@@ -1,0 +1,1684 @@
+#!/bin/bash 
+
+#shopt -o -s xtrace 
+
+# Originele maker:: Donovan Vesters
+# Versie 1.0  -  12-06-2010 
+#
+# Dit script roteerd de logfile die in de long listing options aanwezig zijn als
+# deze niet aan de gewenste waarde voldoen zie hiervoor de variable die in de een
+# van de eerste functions aanwezig zijn.
+# Extra longlisting options zijn eenvoudig toe te voergen of te wijzigen zodat
+# deze rotate op alles servers ingezet kan worden.
+
+
+###############################
+#        EDIT SYNTAX          #
+###############################
+# Edit User : dd-mm-yyyy      #
+# - Korte omschrijving        #
+# UPDATE variable VERSION     #
+###############################
+#
+# Donovan Vesters: 15-06-2010
+# - debug argument toegevoerd
+#
+# Donovan Vesters: 16-06-2010
+# - Help function toegevoegd
+#
+# Donovan Vesters: 21-06-2010
+# - httpd configtest toegevoerd
+#
+# Donovan Vesters: 21-06-2010
+# - Email notificatie indien configtest error geeft toegevoegd
+#
+# Donovan Vesters: 24-06-2010
+# - Commends toegevoegd bij elke stap die wordt uitgevoerd
+#
+# Donovan Vesters: Fri 14 Jun 2013 11:42:46 AM CEST 
+# - optimalisatie ascii tabel
+# - optimalisatie bashcode tot regel 460
+###############################################################
+
+VERSIE='1.06'
+
+###############################################################
+
+
+
+########################################
+#   Invoeren van standaard variable    #
+########################################
+  #         Set Color variable       #
+  ####################################
+
+  COLOR_YELLOW=$(printf '\e[1;33m')
+  COLOR_GREEN=$(printf '\e[0;32m')
+  COLOR_RED=$(printf '\e[1;31m')
+  COLOR_BACK=$(printf '\e[0m')
+  COLOR_WITHE=$(printf '\e[1;37m')
+  COLOR_UNDERLINE=$(printf '\e[2m')
+
+  #####################################
+  #           CURENT HOSTNAME         #
+  #####################################
+
+  THIS_HOST=`uname -n`
+
+  #####################################
+  #            ascii table            #
+  #####################################
+
+  MARG_L=' '
+  CORN='+'
+  VB='-'
+  HB='|'
+  COLUMNS=(17 15 16 9 11 10 18 9 14)
+  MENU=('Long argument' 'FileName' 'FilePath' 'Filesize' 'Older then' 'Plaintext' 'Zipfile' 'Services' 'ServiceAction')
+
+########################################
+#       Einde standaard variable       #
+########################################
+
+#########################
+function PrintInfo {
+
+# PrintInfo is de function waar de log syntac gezet wordt. De file achte " |tee " is de file waar de log regels
+# naartoe ge-output-ed worden.
+printf "%17s %-35s %s\n" "$(date +"%b %d %T")" "${THIS_HOST}" "${1}"
+#echo -ne "`date +"%b %d %T"` ${THIS_HOST}\t ${1}\n"
+}
+#########################
+
+
+#########################
+function LoadCheck {
+
+# De function LoadCheck is geschreven om de loed van de server vooraf en tijdens dit prosess in de gaten te houden.
+
+    # EMAIL_ME:  is het email adres wat gebruikt wordt als de load van de server te hoog is voor of tijdens dit prosess.
+    # Hier wordt een email naartoe verzonden met de huidige load en de status van deze sessie.
+    EMAIL_ME="helpdesk@vdx.nl"
+    # DO_ECHO: deze waarde wordt in de uitvoor meergegeven. 0=geen output, 1=wel output.
+    DO_ECHO=${1}
+    # FULL_LOAD: huidige load ophalen.
+    FULL_LOAD=`cat /proc/loadavg`
+    # CLEAN_LOAD: load terug halen naar 1 decimaal.
+    CLEAN_LOAD=`echo ${FULL_LOAD} |tr -dc '[:digit:]' |cut -c 1`
+
+	# Controleer of de variable RECHECK_COUNT is gezet.
+	# Zo niet dan zet naar 0.
+	[[ ${RECHECK_COUNT:=0} ]]
+
+	# Controleer of de output getoond moet worden.
+	# Zo ja print
+	[[ ${DO_ECHO:-0} -eq 1 ]] && PrintInfo "Start Load check"
+
+	# controleer het aantal keren dat de load controle per aanroep is uitgevoerd.
+        if [[ ${RECHECK_COUNT:-10} -lt 10 ]]
+        then
+	# indien minder dan 10 keer.
+		# controleer of de load hoger is dan 3.
+                if [[ ${CLEAN_LOAD:-4} -gt 3 ]]
+                then
+		    # indien de load hoger is dan 3 is de variable RECHECK_COUNT plus 1.
+                    RECHECK_COUNT=`echo ${RECHECK_COUNT}+1|bc`
+                        PrintInfo "Load is to high (${CLEAN_LOAD}+)."
+			PrintInfo "Automatic recheck load: after 60 sec. Recheck ${RECHECK_COUNT}/10"
+			# wacht 60 seconde voor de loadCheck opnieuw begind
+                        sleep 60
+                        LoadCheck
+                else
+		# als de load niet hoger is dan 3 wordt deze als succesvol aangemerkt.
+			# controleer of de output geprint dient te worden.
+			[[ ${DO_ECHO:-0} -eq 1 ]] && PrintInfo "Load is \t\t\t\t: OKE ($FULL_LOAD)"
+			# en zet de variable RECHECK_COUNT terug naar 0.
+			RECHECK_COUNT='0'
+			# geeft een succesvol terug
+                        return 0
+                fi
+        else
+	# Indien dit de 10de keer is dat de LoadCheck is uitgevoerd wordt er nog 1 laatste check gedaan.
+                if [[ ${CLEAN_LOAD:-4} -gt 3 ]]
+                then
+		# Indien de load nog steeds hoger is dan 3 wordt er een email gestuurd met de volgende
+		# informatie (email gaat naar variable EMAIL_ME).
+		# het onderwerp is : hostname - scriptnaam en locatie - load is to high.
+		# de body :
+		# hostname
+		# scriptnaam en loacatie
+		# Max recheck load exceeded (10/10)
+		# Server did not rotate
+		# Logs to rotate : Alle logfiles die geroteerd zouden worden.
+		# Curent stat : Huidige log file die geroteerd zou worden.
+                        PrintInfo "Max recheck load exceeded (${RECHECK_COUNT}/10)"
+			PrintInfo "Sent email to ${EMAIL_ME} to notify "
+			echo -ne "\n${THIS_HOST}\n${0}\nMax recheck load exceeded (${RECHECK_COUNT}/10)\n${FULL_LOAD}\n\nServer did not rotate\nLogs to rotate : ${CHECK_LOG_NAME}\n Curent stat ${FILE_NAME}: " |mail -s "${THIS_HOST} - ${0} - load is to high" ${EMAIL_ME}
+		    RECHECK_COUNT='0'
+			# geeft een niet succevolmelding terug.
+                        return 1
+                else
+		# indien de 10de check niet hoger was dan 3.
+			PrintInfo "Load is OKE"
+			# en zet de variable RECHECK_COUNT terug naar 0.
+			RECHECK_COUNT='0'
+			# geeft een succesvol terug
+                        return 0
+                fi
+        fi
+}
+#########################
+
+
+#########################
+function SetVariable {
+
+# SetVariable is de function waar alle variable gezet worden waar en waaraan de log file aan dient te voldoen.
+
+# Controleert of er een listing wordt opgevraagd.
+if [[ ${LIST:-0} != 1 ]]
+then
+	#indien dat niet het geval is.
+	PrintInfo "Set variable voor ${OPTION}"
+fi
+
+# cases met alle log variable hierin mag en kan eenvoudig wat toegevoegd of verwijderd worden.
+case ${OPTION} in
+
+	'apf')			FILE_NAME='apf_log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'bfd')			FILE_NAME='bfd_log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'boot')			FILE_NAME='boot.log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'cron')			FILE_NAME='cron'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='10000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'maillog')		FILE_NAME='maillog'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='50000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='2'
+				ROTATE_METHOD_ZIP='3'
+				;;
+
+	'messages')		FILE_NAME='messages'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='50000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'secure')		FILE_NAME='secure'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'sim')			FILE_NAME='sim_log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'spooler')		FILE_NAME='spooler'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'xferlog')		FILE_NAME='xferlog'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'httpdaccess')		FILE_NAME='access_log'
+				FILE_PATH='/var/log/httpd/'
+				FILE_SIZE='5000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='reload'
+				SERVICE_TYPE='httpd'
+				ROTATE_METHOD_PLAIN='4'
+				ROTATE_METHOD_ZIP='0'
+				;;
+
+########'httpderror')		FILE_NAME='error_log'
+########			FILE_PATH='/var/log/httpd/'
+########			FILE_SIZE='1000'
+########			OR_OLDER_THEN='30'
+########			SERVICE_ACTION='reload'
+########			SERVICE_TYPE='httpd'
+########			ROTATE_METHOD_PLAIN='4'
+########			ROTATE_METHOD_ZIP='0'
+########			;;
+
+	'httpdsslaccess')	FILE_NAME='ssl_access_log'
+				FILE_PATH='/var/log/httpd/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='reload'
+				SERVICE_TYPE='httpd'
+				ROTATE_METHOD_PLAIN='4'
+				ROTATE_METHOD_ZIP='0'
+				;;
+
+	'httpdsslerror')	FILE_NAME='ssl_error_log'
+				FILE_PATH='/var/log/httpd/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='reload'
+				SERVICE_TYPE='httpd'
+				ROTATE_METHOD_PLAIN='4'
+				ROTATE_METHOD_ZIP='0'
+				;;
+
+	'httpdsuexec')		FILE_NAME='suexec_log'
+				FILE_PATH='/var/log/httpd/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='reload'
+				SERVICE_TYPE='httpd'
+				ROTATE_METHOD_PLAIN='4'
+				ROTATE_METHOD_ZIP='0'
+				;;
+
+	'rotate')		FILE_NAME='log_rotate.log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION=''
+				SERVICE_TYPE=''
+				ROTATE_METHOD_PLAIN='2'
+				ROTATE_METHOD_ZIP='3'
+				;;
+
+	'vibo')			FILE_NAME='vibo.log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION=''
+				SERVICE_TYPE=''
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'ensim')		FILE_NAME='eplcp.log'
+				FILE_PATH='/var/log/ensim/'
+				FILE_SIZE='10000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='epld'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+	'snmpd')		FILE_NAME='snmpd.log'
+				FILE_PATH='/var/log/'
+				FILE_SIZE='1000'
+				OR_OLDER_THEN='30'
+				SERVICE_ACTION='restart'
+				SERVICE_TYPE='syslog'
+				ROTATE_METHOD_PLAIN='1'
+				ROTATE_METHOD_ZIP='4'
+				;;
+
+esac
+
+################################################
+#         TEST FACE VAR/LOG IN HOME DIR        #
+################################################
+
+#       FILE_PATH="/home/dvesters${FILE_PATH}"
+
+################################################
+#         TEST FACE VAR/LOG IN HOME DIR        #
+################################################
+
+
+# Controleert of er een listing wordt opgevraagd.
+if [[ ${LIST:-0} -eq 1 ]]
+then
+	if [[ ! ${FILE_NAME} ]]
+	then
+		COLUMN3_tmp=$((${COLUMN[1]}+${COLUMN[2]}+${COLUMN[3]}+4))
+		COLUMN3="${COLUMN3_tmp}"
+		declare THISROW=("--${OPTION:--}" "${FILE_PATH:--}" "${OR_OLDER_THEN:--} days" "${ROTATE_METHOD_PLAIN:--}" "${ROTATE_METHOD_ZIP:--}" "${SERVICE_TYPE:--}" "${SERVICE_ACTION:--}")
+		echo -n "${MARG_L}"
+		for i in $(seq 0 1 8) ;do printf "%1s%${COLUMNS[${i}]}s " "${HB}" "${THISROW[${i}]}" ;done
+		echo ${HB}
+		unset THISROW
+	else
+		# Indien dat het geval is print de volgende regel (is 1 enkele regel).
+		# De variable COLUMNx geeft aan hoe breed te kolom moet worden
+		declare THISROW=("--${OPTION:--}" "${FILE_NAME:--}" "${FILE_PATH:--}" "${FILE_SIZE:--} KB" "${OR_OLDER_THEN:--} days" "${ROTATE_METHOD_PLAIN:--}" "${ROTATE_METHOD_ZIP:--}" "${SERVICE_TYPE:--}" "${SERVICE_ACTION:--}")
+		echo -n "${MARG_L}"
+		for i in $(seq 0 1 8) ;do printf "%1s%${COLUMNS[${i}]}s " "${HB}" "${THISROW[${i}]}" ;done
+		echo ${HB}
+		unset THISROW
+	fi
+fi
+
+# Controleer of de rotate plus controle wordt uitgevoerd.
+if [[ ${ROTATE:-0} -eq 1 ]]
+then
+    # indien dat het geval is voeg in aan de variable CHECK_LOG_NAME de casename toe.
+	CHECK_LOG_NAME_TMP="${OPTION} ${CHECK_LOG_NAME}"
+	CHECK_LOG_NAME="${CHECK_LOG_NAME_TMP}"
+#	CHECK_LOG_NAME+="${OPTION} "
+fi
+}
+#########################
+
+
+#########################
+function FixVariable {
+
+# De function FixVariable controleerd of alle benodigde variable wel werkelijk zijn gezet.
+# Indien dit niet het geval is worden deze blanko gezet.
+	[[ ${FILE_NAME:=} ]]
+	[[ ${FILE_PATH:=} ]]
+	[[ ${FILE_SIZE:=} ]]
+	[[ ${OR_OLDER_THEN:=} ]]
+	[[ ${SERVICE_ACTION:=} ]]
+	[[ ${SERVICE_TYPE:=} ]]
+	[[ ${ROTATE_METHOD_PLAIN:=} ]]
+	[[ ${ROTATE_METHOD_ZIP:=} ]]
+}
+#########################
+
+
+#########################
+CleanReturn() {
+	# Cases voor listing de asci-art tabel
+	# ENTER gaat naar de volgende regel
+	echo -ne '\033[0m\n'
+}
+
+Line() {
+	# LINE is de asci-art regel met + en - die de kolommen tekenen.
+	# De voorloep rekend aan de hand van de variable COLUMNx uit hoeveel koppeltekens geprint
+	# moeten worden voor om de breete van de kolom correct te sluiten.
+	echo -n "${MARG_L}"
+	for i in $(seq 0 1 8) ;do printf ${CORN} ;seq -s"${VB}" -0 1 ${COLUMNS[${i}]} |tr -cd "${VB}" ;done
+	echo ${CORN}
+}
+
+Row() {
+	# COLUM print de kolom namen weer
+	# De variable COLUMNx geeft aan hoe breed te kolom moet worden
+	echo -n "${MARG_L}"
+	for i in $(seq 0 1 8) ;do printf "%1s%${COLUMNS[${i}]}s " "${HB}" "${MENU[${i}]}" ;done
+	echo ${HB}
+}
+#########################
+
+
+#########################
+function FindToFilesToRotate {
+
+# De function FindToFilesToRotate werkt met voornamelijk met het commando find.
+# Hiermeer wordt gezogd naar bestande met speciafieke waarden
+
+# ${FILE_NAME}
+# ${FILE_PATH}
+# ${FILE_SIZE}
+# ${OR_OLDER_THEN}
+# ${ROTATE_METHOD_PLAIN}
+# ${ROTATE_METHOD_ZIP}
+# ${SERVICE_TYPE}
+# ${SERVICE_ACTION}
+
+# cd naar de directory waar de logfile zich bevind
+PrintInfo "cd ${FILE_PATH}"
+cd ${FILE_PATH}
+
+# Zoek naar de betrefende logfile/grote (groter dan vastgestelde waarde)
+PrintInfo "Controleer of ${FILE_NAME} niet groter is dan ${FILE_SIZE} KB"
+FIND_SIZE_AND_CTIME_FILE=`find ./ -mindepth 1 -maxdepth 1 -type f -name "${FILE_NAME}" -size +${FILE_SIZE}k |sed s'/^\.\///'`
+
+# Controleer of de filename is gevonden bij het controleren naar de grote van het bestand
+if [ "x${FIND_SIZE_AND_CTIME_FILE}" != "x${FILE_NAME}" ]
+then
+# Indien hij niet groter is dan de vastgestelde waarde wordt er gecontroleerd op de create date van de logfile.
+
+	# Zoek naar de betrefende logfile/create datum.
+	PrintInfo "Controleer of ${FILE_NAME} niet ouder is dan ${OR_OLDER_THEN} dagen"
+	FIND_SIZE_AND_CTIME_FILE=`find ./ -mindepth 1 -maxdepth 1 -type f -name "${FILE_NAME}" -ctime -"${OR_OLDER_THEN}" |sed s'/^\.\///'`
+
+	# Controleer of de filename is gevonden bij het controleren naar de create datum van het bestand.
+	if [ "x${FIND_SIZE_AND_CTIME_FILE}" == "x${FILE_NAME}" ]
+	then
+	# Indien hij ouder is dan de vastgestelde waarde wordt deze aan de te roteren bestandsnamen toegevoegd.
+		PrintInfo "${OPTION} wordt aan de te roteren bestaden toegevoegd omdat hij ouder is dan ${OR_OLDER_THEN} dagen"
+		CHECK_LOG_NAME_TMP="${OPTION} ${CHECK_LOG_NAME}"
+		CHECK_LOG_NAME="${CHECK_LOG_NAME_TMP}"
+#		CHECK_LOG_NAME+="${OPTION} "
+	else
+		PrintInfo "${OPTION} hoeft niet geroteerd te worden omdat hij niet groter is dan ${FILE_SIZE} KB en niet ouder is dan ${OR_OLDER_THEN} dagen"
+	fi
+
+else
+# Indien hij wel groter is dan de vastgestelde waarde wordt deze aan de te roteren bestandsnamen toegevoegd.
+
+	PrintInfo "${OPTION} wordt aan de te roteren bestaden toegevoegd omdat hij groter is dan ${FILE_SIZE} KB"
+		CHECK_LOG_NAME_TMP="${OPTION} ${CHECK_LOG_NAME}"
+		CHECK_LOG_NAME="${CHECK_LOG_NAME_TMP}"
+#	CHECK_LOG_NAME+="${OPTION} "
+fi
+
+# Controleer of de variable CHECK_LOG_NAME leeg is.
+if [[ ! ${CHECK_LOG_NAME// /} ]]
+then
+# Indien dat het geval is wordt er een markering geplaatst om het script te stoppen.
+	PrintInfo "Markering plaatsen om ${0} te stoppen gezien size en ctime nog binnen vastgestelde waarde valt"
+	STOP='9'
+else
+# Indien hij niet leeg is wordt er geen markering geplaatst en gecontroleerd of er nog een oude markering verwijderd dient te worden.
+
+	# Contorleer of er nog een oude markering STOP aanwezig is.
+	if [[ ${STOP:-0} -eq 9 ]]
+	then
+		PrintInfo "Markering verwijderen om ${0} te stoppen gezien ${OPTION} niet binnen de vastegestelde waarde vast"
+	fi
+	PrintInfo "Tot op heden te roteren : ${CHECK_LOG_NAME}"
+	# STOP markerering verwijderen.
+	STOP='0'
+fi
+}
+#########################
+
+
+#########################
+function CheckMethod {
+
+# De function CheckMethod zoek uit welke rotate methode uitevoerd dient te worden
+# Controle op hoeveel plaintexte bestanden, ofwel bestanden die direct leesbaar zijn
+# Controle op hoeveel gezipte bestanden, ofwel bestanden die eerst uitgepakt dienen te worden voor deze gelezen kan worden.
+
+# Controleerd of: EN de plaintext 1 is EN het aantal zipfiles 4 is. 
+if [ "x${ROTATE_METHOD_PLAIN}" == "x1" ] && [ "x${ROTATE_METHOD_ZIP}" == "x4" ]
+then
+# Indien dat het geval is wordt de rotate methode 14 gezet.
+	PrintInfo "Aantal plaintext(s) en zipfile('s) voor ${OPTION} \tAantal plaintext : ${ROTATE_METHOD_PLAIN} aantal Zip : ${ROTATE_METHOD_ZIP}"
+	ROTATE_METHOD='14'
+
+# Indien dat niet het geval is wordt de volgende controle uitgevoerd.
+# Controleerd of: EN de plaintext 2 is EN het aantal zipfiles 3 is. 
+elif [ "x${ROTATE_METHOD_PLAIN}" == "x2" ] && [ "x${ROTATE_METHOD_ZIP}" == "x3" ]
+then
+# Indien dat het geval is wordt de rotate methode 23 gezet.
+	PrintInfo "Aantal plaintext(s) en zipfile('s) voor ${OPTION} \tAantal plaintext : ${ROTATE_METHOD_PLAIN} aantal Zip : ${ROTATE_METHOD_ZIP}"
+	ROTATE_METHOD='23'
+
+# Indien dat niet het geval is wordt de volgende controle uitgevoerd.
+# Controleerd of: EN de plaintext 4 is EN het aantal zipfiles 0 is. 
+elif [ "x${ROTATE_METHOD_PLAIN}" == "x4" ] && [ "x${ROTATE_METHOD_ZIP}" == "x0" ]
+then
+# Indien dat het geval is wordt de rotate methode 40 gezet.
+	PrintInfo "Aantal plaintext(s) en zipfile('s) voor ${OPTION} \tAantal plaintext : ${ROTATE_METHOD_PLAIN} aantal Zip : ${ROTATE_METHOD_ZIP}"
+	ROTATE_METHOD='40'
+
+# Als geen van alle overeen komen wordt de waarde 0 geplaatst.
+# Er zal dan ook geen rotate voor dit bestand plaats vinden.
+else
+	PrintInfo "Aantal plaintext en zip zijn onbekend"
+	ROTATE_METHOD='0'
+fi
+}
+#########################
+
+
+#########################
+function RemoveOldMigrations {
+
+	PrintInfo "Opzoeken en verwijdern van oude migratie folders."
+	find ${FILESYSTEMTEMPLATE_PATH} -mindepth 1 -maxdepth 1 -type d -ctime +${OLDER_THEN} -exec rm -rvf {} ';'
+}
+#########################
+
+
+#########################
+function RotateFirstStap {
+
+# De function RotateFirstStap de de eerste stap van log rotate.
+# Hierbij worden ouder files verwijderd
+# overige files gerenamed
+# een nieuwe logfile aangemaakt.
+
+# ${FILE_NAME}
+# ${FILE_PATH}
+# ${FILE_SIZE}
+# ${OR_OLDER_THEN}
+# ${ROTATE_METHOD_PLAIN}
+# ${ROTATE_METHOD_ZIP}
+# ${SERVICE_TYPE}
+# ${SERVICE_ACTION}
+
+# Controleer of de debug van dit script is geactiveerd. 
+if [ "x${DEBUG}" == "xON" ]
+then
+# Indien dat het geval is zal de print modes geactieveerd worden en wordt er _TEST aan de rotate methode toegevoegd,
+	ROTATE_METHOD_TMP="${ROTATE_METHOD}_TEST"
+	ROTATE_METHOD="${ROTATE_METHOD_TMP}"
+#	ROTATE_METHOD+='_TEST'
+fi
+
+case ${ROTATE_METHOD} in
+# cases met log rotate methodes.
+
+	# 14_TEST print alleen de te uitvoeren methode.
+	'14_TEST')	PrintInfo "TEST_FASE : do; FirstStap rotate method 14 (${FILE_NAME})"
+			PrintInfo "cd ${FILE_PATH}"
+			cd ${FILE_PATH}
+			if [ -f ./${FILE_NAME}.4.gz ]
+			then
+				PrintInfo "rm -f ./${FILE_NAME}.4.gz"
+			fi
+			if [ -f ./${FILE_NAME}.3.gz ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.3.gz ./${FILE_NAME}.4.gz"
+			else
+				PrintInfo "touch ./${FILE_NAME}.4.gz"
+			fi
+			if [ -f ./${FILE_NAME}.2.gz ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.2.gz ./${FILE_NAME}.3.gz"
+			else
+				PrintInfo "touch ./${FILE_NAME}.3.gz"
+			fi
+			if [ -f ./${FILE_NAME}.1.gz ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.1.gz ./${FILE_NAME}.2.gz"
+			else
+				PrintInfo "touch ./${FILE_NAME}.2.gz"
+			fi
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "mv ./${FILE_NAME} ./${FILE_NAME}_to_zip"
+			else
+				PrintInfo "touch ./${FILE_NAME}_to_zip"
+			fi
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "touch ./${FILE_NAME}"
+			fi
+			;;
+
+	# 14 voert logrotate methode 14 uit.
+	'14')
+			# cd naar de directory waar de logfile zich bevind om er voor te zorgen dat
+			# zodra je de logfile uitpakt deze zich ook in de huidige directory " ./  " zal laten uitpakken.
+			PrintInfo "cd ${FILE_PATH}"
+			cd ${FILE_PATH}
+
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.4 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.4"
+				rm -f ./${FILE_NAME}.4
+			fi
+			
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.3 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.3"
+				rm -f ./${FILE_NAME}.3
+			fi
+			
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.2 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.2"
+				rm -f ./${FILE_NAME}.2
+			fi
+			
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.1 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.1"
+				rm -f ./${FILE_NAME}.1
+			fi
+			
+			# Verwijder oudste logfile.
+			if [ -f ./${FILE_NAME}.4.gz ]
+			then
+				PrintInfo "remove ./${FILE_NAME}.4.gz"
+				rm -f ./${FILE_NAME}.4.gz
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.3.gz ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.3.gz ./${FILE_NAME}.4.gz"
+				mv ./${FILE_NAME}.3.gz ./${FILE_NAME}.4.gz
+			else
+				touch ./${FILE_NAME}.4.gz
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.2.gz ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.2.gz ./${FILE_NAME}.3.gz"
+				mv ./${FILE_NAME}.2.gz ./${FILE_NAME}.3.gz
+			else
+				touch ./${FILE_NAME}.3.gz
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.1.gz ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.1.gz ./${FILE_NAME}.2.gz"
+				mv ./${FILE_NAME}.1.gz ./${FILE_NAME}.2.gz
+			else
+				touch ./${FILE_NAME}.2.gz
+			fi
+
+			# Verplaats de huidige live logfile naar de toekomstige tweede plaintextfile.
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "move   ./${FILE_NAME} ./${FILE_NAME}_to_zip"
+				mv ./${FILE_NAME} ./${FILE_NAME}_to_zip
+			else
+				touch ./${FILE_NAME}_to_zip
+			fi
+
+			# Plaats alvast een nieuwe eerste plaintextfile. Deze zal pas gebruikt worden nadat er
+			# een services is gerestart of gereload.
+			if [ \! -f ./${FILE_NAME} ]
+			then
+				PrintInfo "touch  ./${FILE_NAME}"
+				touch ./${FILE_NAME}
+			fi
+			;;
+
+
+	# 23_TEST print alleen de te uitvoeren methode.
+	'23_TEST')	PrintInfo "TEST_FASE : do; FirstStap rotate method 23 (${FILE_NAME})"
+			PrintInfo "cd ${FILE_PATH}"
+			cd ${FILE_PATH}
+			if [ -f ./${FILE_NAME}.4.gz ]
+			then
+				PrintInfo "rm -f ./${FILE_NAME}.4.gz"
+			fi
+			if [ -f ./${FILE_NAME}.3.gz ]
+			then
+				PrintInfo "rm -f ./${FILE_NAME}.3.gz"
+			fi
+			if [ -f ./${FILE_NAME}.2.gz ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.2.gz ./${FILE_NAME}.3.gz"
+			else
+				PrintInfo "touch ./${FILE_NAME}.3.gz"
+			fi
+			if [ -f ./${FILE_NAME}.1.gz ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.1.gz ./${FILE_NAME}.2.gz"
+			else
+				PrintInfo "touch ./${FILE_NAME}.2.gz"
+			fi
+			if [ -f ./${FILE_NAME}.1 ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.1 ./${FILE_NAME}.1_to_zip"
+			else
+				PrintInfo "touch ./${FILE_NAME}.1_to_zip"
+			fi
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "mv ./${FILE_NAME} ./${FILE_NAME}.1"
+			else
+				PrintInfo "touch ./${FILE_NAME}.1"
+			fi
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "touch ./${FILE_NAME}"
+			fi
+			;;
+
+	# 23 voert logrotate methode 23 uit.
+	'23')
+			# cd naar de directory waar de logfile zich bevind om er voor te zorgen dat
+			# zodra je de logfile uitpakt deze zich ook in de huidige directory " ./  " zal laten uitpakken.
+			PrintInfo "cd ${FILE_PATH}"
+			cd ${FILE_PATH}
+
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.4 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.4"
+				rm -f ./${FILE_NAME}.4
+			fi
+			
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.3 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.3"
+				rm -f ./${FILE_NAME}.3
+			fi
+			
+			# Verwijder oudste handmatig geroteerde file's logfile.
+			if [ -f ./${FILE_NAME}.2 ]
+			then
+				PrintInfo "remove oude handmatig geroteerde file's./${FILE_NAME}.2"
+				rm -f ./${FILE_NAME}.2
+			fi
+			
+			# Verwijder oudste logfile.
+			if [ -f ./${FILE_NAME}.4.gz ]
+			then
+				PrintInfo "remove ./${FILE_NAME}.4.gz"
+				rm -f ./${FILE_NAME}.4.gz
+			fi
+
+			# Verwijder oudste logfile.
+			if [ -f ./${FILE_NAME}.3.gz ]
+			then
+				PrintInfo "remove ./${FILE_NAME}.3.gz"
+				rm -f ./${FILE_NAME}.3.gz
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.2.gz ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.2.gz ./${FILE_NAME}.3.gz"
+				mv ./${FILE_NAME}.2.gz ./${FILE_NAME}.3.gz
+			else
+				touch ./${FILE_NAME}.3.gz
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.1.gz ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.1.gz ./${FILE_NAME}.2.gz"
+				mv ./${FILE_NAME}.1.gz ./${FILE_NAME}.2.gz
+			else
+				touch ./${FILE_NAME}.2.gz
+			fi
+
+			# Hernoem de tweede plaintext file naar te naar een te comprimeren file.
+			if [ -f ./${FILE_NAME}.1 ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.1 ./${FILE_NAME}.1_to_zip"
+				mv ./${FILE_NAME}.1 ./${FILE_NAME}.1_to_zip
+			else
+				touch ./${FILE_NAME}.1_to_zip
+			fi
+
+			# Verplaats de huidige live logfile naar de toekomstige tweede plaintextfile.
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "move   ./${FILE_NAME} ./${FILE_NAME}.1"
+				mv ./${FILE_NAME} ./${FILE_NAME}.1
+			else
+				touch ./${FILE_NAME}.1
+			fi
+
+			# Plaats alvast een nieuwe eerste plaintextfile. Deze zal pas gebruikt worden nadat
+			# er een services is gerestart of gereload.
+			if [ \! -f ./${FILE_NAME} ]
+			then
+				PrintInfo "touch  ./${FILE_NAME}"
+				touch ./${FILE_NAME}
+			fi
+			;;
+
+
+
+	# 40_TEST print alleen de te uitvoeren methode.
+	'40_TEST')	PrintInfo "TEST_FASE : do; FirstStap rotate method 40 (${FILE_NAME})"
+			PrintInfo "cd ${FILE_PATH}"
+			cd ${FILE_PATH}
+			if [ -f ./${FILE_NAME}.4 ]
+			then
+				PrintInfo "rm -f ./${FILE_NAME}.4"
+			fi
+			if [ -f ./${FILE_NAME}.3 ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.3 ./${FILE_NAME}.4"
+			else
+				PrintInfo "touch ./${FILE_NAME}.4"
+			fi
+			if [ -f ./${FILE_NAME}.2 ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.2 ./${FILE_NAME}.3"
+			else
+				PrintInfo "touch ./${FILE_NAME}.3"
+			fi
+			if [ -f ./${FILE_NAME}.1 ]
+			then
+				PrintInfo "mv ./${FILE_NAME}.1 ./${FILE_NAME}.2"
+			else
+				PrintInfo "touch ./${FILE_NAME}.2"
+			fi
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "mv ./${FILE_NAME} ./${FILE_NAME}.1"
+			else
+				PrintInfo "touch ./${FILE_NAME}.1"
+			fi
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "touch ./${FILE_NAME}"
+			fi
+			;;
+
+	# 40 voert logrotate methode 40 uit.
+	'40')
+			# cd naar de directory waar de logfile zich bevind om er voor te zorgen dat
+			# zodra je de logfile uitpakt deze zich ook in de huidige directory " ./  " zal laten uitpakken.
+			PrintInfo "cd ${FILE_PATH}"
+			cd ${FILE_PATH}
+
+			# Verwijder oudste logfile.
+			if [ -f ./${FILE_NAME}.4 ]
+			then
+				PrintInfo "remove ./${FILE_NAME}.4"
+				rm -f ./${FILE_NAME}.4
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.3 ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.3 ./${FILE_NAME}.4"
+				mv ./${FILE_NAME}.3 ./${FILE_NAME}.4
+			else
+				touch ./${FILE_NAME}.4
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.2 ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.2 ./${FILE_NAME}.3"
+				mv ./${FILE_NAME}.2 ./${FILE_NAME}.3
+			else
+				touch ./${FILE_NAME}.3
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME}.1 ]
+			then
+				PrintInfo "move   ./${FILE_NAME}.1 ./${FILE_NAME}.2"
+				mv ./${FILE_NAME}.1 ./${FILE_NAME}.2
+			else
+				touch ./${FILE_NAME}.2
+			fi
+
+			# Schuift de logfile nummerig een plaats op.
+			if [ -f ./${FILE_NAME} ]
+			then
+				PrintInfo "move   ./${FILE_NAME} ./${FILE_NAME}.1"
+				mv ./${FILE_NAME} ./${FILE_NAME}.1
+			else
+				touch ./${FILE_NAME}.1
+			fi
+
+			# Plaats alvast een nieuwe eerste plaintextfile. Deze zal pas gebruikt worden nadat
+			# er een services is gerestart of gereload.
+			PrintInfo "touch   ./${FILE_NAME}"
+			if [ \! -f ./${FILE_NAME} ]
+			then
+				touch ./${FILE_NAME}
+			fi
+			;;
+
+	# 0_TEST print alleen de te uitvoeren methode.
+	'0_TEST')	PrintInfo "TEST_FASE : do; FirstStap rotate method 40 (${FILE_NAME})"
+			;;
+
+	# 0 voert logrotate methode 0 uit.
+	'0')		# Gezien er geen log rotate methode bekende is wordt er niets gedaan.
+			PrintInfo "Geen logmethode bekend voor ${OPTION}"
+			;;
+
+esac
+}
+#########################
+
+
+#########################
+function FlushInode {
+
+# De function FlushInode is aanwezig om services te restarten of te reloaden.
+# Dit zorgd er voor dat de logs niet langer naar de ouder inode geschreven worden.
+
+# Een voorloep om alle te verwerken restarts/reloads van de betreffende services in 1 variable te krijgen.
+PrintInfo "Services variable ophalen"
+for OPTION in ${CHECK_LOG_NAME}
+do 
+	# Ophalen van de variable van de te roteren logfilers
+	SetVariable
+	# variable van SERVICE_TYPE en SERVICE_ACTION  --> TOEVOEGEN <-- aan de variable SERVICES_LIST
+		SERVICES_LIST_TMP="${SERVICE_TYPE}_${SERVICE_ACTION}\n${SERVICES_LIST}"
+		SERVICES_LIST="${SERVICES_LIST_TMP}"
+#	SERVICES_LIST+="${SERVICE_TYPE}_${SERVICE_ACTION}\n"
+done
+
+# Voorloep om de betreffende services maximaal 1 keer te restarten/reloaden
+for iSERVICE_ACTION in `echo -ne "${SERVICES_LIST}" | grep -e 'restart' -e 'reload' -e 'stop' -e 'start' -e configtest |sort -u`
+do
+	SERVICE_ACTION=`echo ${iSERVICE_ACTION} |sed s'/_/\ /'`
+	# Controle of de services httpd gerestart of gereload dient te worden.
+	if [ `echo "${SERVICE_ACTION}" |grep httpd |wc -l` -eq "1" ]
+	then
+	# Indien httpd gerestart of gereload dient te worden dient er eerst een configtest uitgevoerd te worden.
+		PrintInfo "httpd configtest"
+
+		/etc/init.d/httpd configtest && HTTPD='oke' || HTTPD='error'
+		#PrintInfo "TEST_FASE /etc/init.d/httpd configtest" && HTTPD='oke' || HTTPD='error'
+
+		# Controleren of de configtest succesvol was
+		if [ "x${HTTPD}" == "xoke" ]
+		then
+		# Indien de configtest succesvol was krijgt httpd een restart/reload
+			PrintInfo "${SERVICE_ACTION} geven zodat logregels naar de nieuw inode geschreven worden"
+
+#			PrintInfo "TEST_FASE : do; /etc/init.d/${SERVICE_ACTION}"
+			/etc/init.d/${SERVICE_ACTION}
+
+		else
+		# Indien de configtest NIET succesvol was print en email deze info 
+			PrintInfo "httpd gaf geen oke na een configtest --> ${SERVICE_ACTION} <-- wordt niet uitgevoerd."
+
+			# Email met benodigde informatie geven zodat httpd resestart kan gaan worden.			
+			echo -ne "httpd configtest was NIET zonder errors op de host ${THIS_HOST} --> ${SERVICE_ACTION} <-- is niet uitgevoerd.\n log wordt nog naar de oude inode weggeschreven.\n${SERVICE_ACTION} dient wel uitgevoerd te worden maar het van belang dat er eerst gekeken wordt waarom de configtest niet succesvol was\n" |mail -s "ERROR - ${THIS_HOST} - ${0} - ${SERVICE_ACTION}" ${EMAIL_ME}
+
+		fi
+	else
+	# Indien de services die gerestart dient te worden niet httpd is kan deze direct uitgevoerd worden.
+
+		SYSLOG=`echo ${SERVICE_ACTION} |grep syslog |wc -l`
+		if [ "${SYSLOG}" -eq "1" ]
+		then
+			SERVICES=`echo ${SERVICE_ACTION} |awk '{print$1}'`
+
+			if [ -f /etc/init.d/${SERVICES} ]
+			then
+				PrintInfo "${SERVICE_ACTION} geven zodat logregels naar de nieuw inode geschreven worden"
+				#PrintInfo "TEST_FASE : do; /etc/init.d/${SERVICE_ACTION}"
+				/etc/init.d/${SERVICE_ACTION}
+			else
+	
+				SERVICES_D=`echo ${SERVICES}d`
+				ACTION=`echo ${SERVICE_ACTION} |awk '{print$NF}'`
+				if [ -f /etc/init.d/${SERVICES_D} ]
+				then
+					PrintInfo "${SERVICES_D} ${ACTION} geven zodat logregels naar de nieuw inode geschreven worden"
+					/etc/init.d/${SERVICES_D} ${ACTION}
+				fi
+			fi
+		fi
+
+	fi
+		ENSIM=`echo ${SERVICE_ACTION} |grep epld |wc -l`
+		if [ "${ENSIM}" -eq "1" ]
+		then
+			SERVICES=`echo ${SERVICE_ACTION} |awk '{print$1}'`
+			if [ -f /etc/init.d/${SERVICES} ]
+			then
+				PrintInfo "${SERVICE_ACTION} geven zodat logregels naar de nieuw inode geschreven worden"
+				/etc/init.d/${SERVICE_ACTION}
+			else
+				SERVICES='webppliance'
+				ACTION=`echo ${SERVICE_ACTION} |awk '{print$NF}'`
+				if [ -f /etc/init.d/${SERVICES} ]
+				then
+					PrintInfo "${SERVICES} ${ACTION} geven zodat logregels naar de nieuw inode geschreven worden"
+					/etc/init.d/${SERVICES} ${ACTION}
+				fi
+			fi
+		fi		
+
+done
+}
+#########################
+
+
+#########################
+function RotateFinalStap {
+
+# De function RotateFinalStap is de laatste stap van de log rotate deze roteerd de oude live files.
+# Indien httpd configtest NIET succesvol was worden deze files niet geroteerd. Hier wordt dan een email over verzonden.
+
+# Controleer of de debug van dit script is geactiveerd. 
+if [ "x${DEBUG}" == "xON" ]
+then
+# Indien dat het geval is zal de print modes geactieveerd worden en wordt er _TEST aan de rotate methode toegevoegd.
+	ROTATE_METHOD_TMP="${ROTATE_METHOD}_TEST"
+	ROTATE_METHOD="${ROTATE_METHOD_TMP}"
+#	ROTATE_METHOD+='_TEST'
+fi
+
+case ${ROTATE_METHOD} in
+
+	# 14_TEST print alleen de te uitvoeren methode.
+	'14_TEST')	PrintInfo "TEST_FASE : do; FinalStap rotate method 14 (${FILE_NAME})"
+			if [ "x${HTTPD}" == "xoke" ] || [ "x${SERVICE_TYPE}" != "httpd" ]
+			then
+				
+				PrintInfo "cd ${FILE_PATH}"
+				cd ${FILE_PATH}
+				if [ \! -f ./${FILE_NAME}_to_zip ]
+				then
+					PrintInfo "/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz"
+					PrintInfo "rm -f ./${FILE_NAME}_to_zip"
+				else
+					PrintInfo "touch ./${FILE_NAME}.1.gz"
+				fi
+			else
+				if [ "x${SERVICE_TYPE}" == "xhttpd" ]
+				then
+					PrintInfo "echo -ne \"Omdat httpd configtert een error gaf. Is httpd niet restart/reload. Dit heeft als geval datde live file van ${OPTION} niet geroteerd kan worden gezien hier nog naar geschreven wordt.\n\n contoleren waarom httpd configtest een error geeft en ${OPTION} handmatig roteren\n\n\t/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz\n\trm -f ./${FILE_NAME}_to_zip\n\n\" |mail -s \"WARNING - ${THIS_HOST} - ${0} - ${OPTION} live file niet geroteerd\" ${EMAIL_ME}"
+				fi
+			fi
+			;;
+
+	# 14 voert logrotate methode 14 uit.
+	'14')
+		# Controleren of de configtest succesvol was.
+		if [ "x${HTTPD}" == "xoke" ] || [ "x${SERVICE_TYPE}" != "httpd" ]
+		then
+		# Indien de configtest succesvol was wordt de live logfile direct geroteerd.
+			cd ${FILE_PATH}
+			if [ -f ./${FILE_NAME}_to_zip ]
+			then
+				PrintInfo "nice -n 19 gzip ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz"
+				/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz
+				PrintInfo "remover ./${FILE_NAME}_to_zip"
+				rm -f ./${FILE_NAME}_to_zip
+			else
+				touch ./${FILE_NAME}.1.gz
+			fi
+		else
+		# Indien de configtest NIET succesvol was wordt er eerst gecontroleerd of de huidige te roteren
+		# logfile een http restart/reload vereist
+
+			# Controle of services httpd is.
+			if [ "x${SERVICE_TYPE}" == "xhttpd" ]
+			then
+			# Indien de services httpd is en deze niet is gerestart wordt dit geprint en gemaild
+
+				PrintInfo "Van ${OPTION} wordt de live logfile niet geroteerd omdat httpd configtest een error gaf."
+				PrintInfo "Hierover is een email verzonden naar ${MAIL_MY}"
+
+				# Email alles benodigde gegevens en motivatie waarom de deze file niet geroteerd kan worden
+				# In de email wordt vermeld wat de oorzaak is en wat er exact gedaan dient te worden als dit is verholpen.
+				echo -ne "Omdat httpd configtert een error gaf. Is httpd niet restart/reload. Dit heeft als geval datde live file van ${OPTION} niet geroteerd kan worden gezien hier nog naar geschreven wordt.\n\n contoleren waarom httpd configtest een error geeft en ${OPTION} handmatig roteren\n\n\t/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz\n\trm -f ./${FILE_NAME}_to_zip\n\n" |mail -s "WARNING - ${THIS_HOST} - ${0} - ${OPTION} live file niet geroteerd" ${EMAIL_ME}
+			fi
+		fi
+		;;
+
+
+	# 23_TEST print alleen de te uitvoeren methode.
+	'23_TEST')	PrintInfo "TEST_FASE : do; FinalStap rotate method 23 (${FILE_NAME})"
+			if [ "x${HTTPD}" == "xoke" ] || [ "x${SERVICE_TYPE}" != "httpd" ]
+			then
+				PrintInfo "cd ${FILE_PATH}"
+				cd ${FILE_PATH}
+				if [ \! -f ./${FILE_NAME}.1_to_zip ]
+				then
+					PrintInfo "/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}.1_to_zip > ./${FILE_NAME}.1.gz"
+					PrintInfo "rm -f ./${FILE_NAME}.1_to_zip"
+				else
+					PrintInfo "touch ./${FILE_NAME}.1.gz"
+				fi
+			else
+				if [ "x${SERVICE_TYPE}" == "xhttpd" ]
+				then
+					PrintInfo "echo -ne \"Omdat httpd configtert een error gaf. Is httpd niet restart/reload. Dit heeft als geval datde live file van ${OPTION} niet geroteerd kan worden gezien hier nog naar geschreven wordt.\n\n contoleren waarom httpd configtest een error geeft en ${OPTION} handmatig roteren\n\n\t/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz\n\trm -f ./${FILE_NAME}_to_zip\n\n\" |mail -s \"WARNING - ${THIS_HOST} - ${0} - ${OPTION} live file niet geroteerd\" ${EMAIL_ME}"
+				fi
+			fi
+			;;
+
+	# 23 voert logrotate methode 23 uit.
+	'23')
+		# Controleren of de configtest succesvol was.
+		if [ "x${HTTPD}" == "xoke" ] || [ "x${SERVICE_TYPE}" != "httpd" ]
+		then
+		# Indien de configtest succesvol was wordt de live logfile direct geroteerd.
+			cd ${FILE_PATH}
+			if [ -f ./${FILE_NAME}.1_to_zip ]
+			then
+				PrintInfo "nice -n 19 gzip ./${FILE_NAME}.1_to_zip > ./${FILE_NAME}.1.gz"
+				/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}.1_to_zip > ./${FILE_NAME}.1.gz
+				PrintInfo "remover ./${FILE_NAME}.1_to_zip"
+				rm -f ./${FILE_NAME}.1_to_zip
+			else
+				touch ./${FILE_NAME}.1.gz
+			fi
+		else
+		# Indien de configtest NIET succesvol was wordt er eerst gecontroleerd of de huidige te roteren
+		# logfile een http restart/reload vereist
+
+			# Controle of services httpd is.
+			if [ "x${SERVICE_TYPE}" == "xhttpd" ]
+			then
+			# Indien de services httpd is en deze niet is gerestart wordt dit geprint en gemaild
+
+				PrintInfo "Van ${OPTION} wordt de live logfile niet geroteerd omdat httpd configtest een error gaf."
+				PrintInfo "Hierover is een email verzonden naar ${MAIL_MY}"
+
+				# Email alles benodigde gegevens en motivatie waarom de deze file niet geroteerd kan worden
+				# In de email wordt vermeld wat de oorzaak is en wat er exact gedaan dient te worden als dit is verholpen.
+				echo -ne "Omdat httpd configtert een error gaf. Is httpd niet restart/reload. Dit heeft als geval datde live file van ${OPTION} niet geroteerd kan worden gezien hier nog naar geschreven wordt.\n\n contoleren waarom httpd configtest een error geeft en ${OPTION} handmatig roteren\n\n\t/bin/nice -n 19 /bin/gzip -c ./${FILE_NAME}_to_zip > ./${FILE_NAME}.1.gz\n\trm -f ./${FILE_NAME}_to_zip\n\n" |mail -s "WARNING - ${THIS_HOST} - ${0} - ${OPTION} live file niet geroteerd" ${EMAIL_ME}
+			fi
+		fi
+		;;
+
+
+
+	# 40_TEST print alleen de te uitvoeren methode.
+	'40_TEST')	PrintInfo "TEST_FASE : do; FinalStap rotate method 40 (${FILE_NAME})" ;;
+
+	# 40 voert logrotate methode 40 uit.
+	'40')		# Voor rotate methode 40 is geen laatste actie nodig gezien er geen zipfiles aanwezig zijn.
+			PrintInfo "Geen zip acties nogdig voor ${OPTION}"
+			;;
+
+	# 0_TEST print alleen de te uitvoeren methode.
+	'0_TEST')	PrintInfo "TEST_FASE : do; FirstStap rotate method 40 (${FILE_NAME})" ;;
+
+	# 0 voert logrotate methode 0 uit.
+	'0')		# Gezien er geen log rotate methode bekende is wordt er niets gedaan.
+			PrintInfo "Geen logmethode bekend voor ${OPTION}"
+			;;
+
+esac
+}
+#########################
+
+
+#########################
+function Help {
+
+# De function Help spreek voor zich.
+
+# Ophalen van alle bekende variable zodat deze als OPTIONS getoond kunnen worden.
+ALL=`echo -ne \`cat ${0} |grep -v '#' |grep -m1 -A1000 'SetVariable' |grep -m1 -A1000 'case' |grep -m1 -B1000 'esac' |grep ')' |grep -v '#' |sed s/\'//g  |awk -F'\t' '{print$2}' |awk -F')' '{print"--"$1}'\``
+
+echo "
+Versie : ${COLOR_UNDERLINE}${COLOR_WITHE}${VERSIE}${COLOR_BACK}
+
+		[Longlisting ${COLOR_UNDERLINE}${COLOR_WITHE}OPTIONS${COLOR_BACK}: ${COLOR_WITHE} ${ALL} ${COLOR_BACK}]
+
+${COLOR_YELLOW}Command${COLOR_BACK} :${0} 
+
+	Argumenten:
+
+	${COLOR_WITHE}-A${COLOR_BACK}	All Options 
+		Waar -A staat voor alle longlisting Options die op dit moment gedefineerd zijn in ${0}
+		${COLOR_UNDERLINE}Voorbeeld${COLOR_BACK} : ${0} -r -A
+		Voor meer voorbeelden gebruik : ${0} -e
+		
+	${COLOR_WITHE}-d${COLOR_BACK}	debug
+		Hiermee wordt er niets uitgevoerd alleen geprint
+		${COLOR_RED}LET OP !!!${COLOR_BACK} Deze optie dient voorafgaande de vervolg argumetnen meegegeven te worden
+		${COLOR_UNDERLINE}Voorbeeld${COLOR_BACK} : ${0} -d -RA
+		Voor meer voorbeelden gebruik : ${0} -e
+
+	${COLOR_WITHE}-l${COLOR_BACK}	list
+		Geeft indien er een longlisting variable wordt meegegevens een overzicht van alle check
+		variable die gebruikt worden bij de optie -r (rotate)
+		${COLOR_UNDERLINE}Voorbeeld${COLOR_BACK} : ${0} -l --maillog --httpaccess
+		Voor meer voorbeelden gebruik : ${0} -e
+
+	${COLOR_WITHE}-L${COLOR_BACK}	List-All
+		Geeft een lijst weer van alle longlisting options en de check variable die gebruikt worden
+		bij de -r (rotate) optie
+
+	${COLOR_WITHE}-r${COLOR_BACK}	rotate
+		Rotatie wordt uitgevoerd op alle longlisting options maar niet voordat er gecontroleerd wordt
+		of dit werkelijk nodig is.
+		De waarde waar op gecontroleerd wordt kunje vinden in de -L (List ALL) 
+		${COLOR_UNDERLINE}Voorbeeld${COLOR_BACK} : ${0} -r --maillog --apf
+		Voor meer voorbeelden gebruik : ${0} -e
+
+		Indien er een longlisting options geforceerd moet worden en de rest gecontroleerd dien je de
+		force optie (-R) voor de voor de rotatie met de -A doet.
+		${COLOR_UNDERLINE}Voorbeeld${COLOR_BACK} : ${0} -R --maillog --apf -r -A
+		Voor meer voorbeelden gebruik : ${0} -e
+
+	${COLOR_WITHE}-R${COLOR_BACK}	Rotate Force
+		Roteerd de longlisting options die meegegeven worden zonder dat er gecontroleerd wordt of dit
+		nodig is.
+
+	${COLOR_WITHE}-h${COLOR_BACK}	Geeft deze help weer.
+
+	${COLOR_WITHE}-e${COLOR_BACK}	Geeft deze help weer maar dan meer meer voorbeelden
+
+
+
+Vragen, requests of bug meldingen kunnen naar VarLogRotate_DEBUG@D-Bass.nl
+
+"
+}
+#########################
+
+#########################
+function Examples {
+
+# De function Examples spreek ook voor zich.
+# Deze kan als extra dienen bij de al aanwezig help function.
+
+echo "
+		Voorbeelden
+
+		1.)	De maillog, bfd en sim  geforceerd roteren & apf en cron alleen roteren indien nodig
+			${COLOR_WITHE}${0} -R --maillog --bfd --sim -r --apf --cron${COLOR_BACK}
+
+		2.)	De maillog en apf geforceerd roteren & de restst van alle options alleen indien nodig
+			${COLOR_WITHE}${0} -R --maillog --apf -r -A${COLOR_BACK}
+			${COLOR_WITHE}${0} -R --maillog --apf -rA${COLOR_BACK}
+
+		3.)	Alles controleren of roteren nodig is
+			${COLOR_WITHE}${0} -r -A${COLOR_BACK}
+			${COLOR_WITHE}${0} -rA${COLOR_BACK}
+
+		4.)	Alles geforceerd roteren
+			${COLOR_WITHE}${0} -R -A${COLOR_BACK}
+			${COLOR_WITHE}${0} -RA${COLOR_BACK}
+
+		5.)	Toon alleen wat er gedaan wordt maar doe niets
+			LET OP : Hierbij is het van noodzaak dat de -d optie voor alle vervolg opties gegeven wordt
+			${COLOR_WITHE}${0} -d -r --maillog${COLOR_BACK}
+			${COLOR_WITHE}${0} -d -RA${COLOR_BACK}
+			${COLOR_WITHE}${0} -d -R --maillog --apf --bfd -r -A${COLOR_BACK}
+
+		6.)	Het -R en het -r argumetn kunnen eindeloos afgewisseld worden.
+			${COLOR_WITHE}${0} -r --maillog -R --apf -r --httpdaccess -R --sim -r --cron --bfd${COLOR_BACK}
+
+		7.)	${COLOR_WITHE}${0} -l --maillog --httpdaccess${COLOR_BACK}
+
+   +------------------+----------------+-----------------+----------+---------------+-----------+---------+----------+---------------+
+   |    Long argument |       FileName |        FilePath | Filesize | Or older then | Plaintext | Zipfile | Services | ServiceAction |
+   +------------------+----------------+-----------------+----------+---------------+-----------+---------+----------+---------------+
+   |        --maillog |        maillog |       /var/log/ | 50000 KB |       30 days |         2 |       3 |   syslog |       restart |
+   |    --httpdaccess |     access_log | /var/log/httpd/ |  5000 KB |       30 days |         4 |       0 |    httpd |        reload |
+   +------------------+----------------+-----------------+----------+---------------+-----------+---------+----------+---------------+
+"
+}
+#########################
+
+
+#########################
+
+# Dit zijn de eerste daadwerkelijke acties die gedaan worden. Hierboven zijn allen 
+# functions aanwezig die aan de hand van het geen hieronder uitgevoerd kunnen gaan
+# worden. Afhankelijk van de argumenten die worden meegegeven.
+
+# Configureren en uitlezen van de aanwezige argumenten.
+while getopts  "hl-:LrRAde" flag
+	do
+
+	# De uitvoer defineren van de meegegeven argumenten.
+	case ${flag} in
+
+		# Tonen van een asci-art table met de mogelijke of opgevraagde longlisting argumenten.
+		'l')	# Variable list wordt op 1 gezet zodat de restat van de functions weten dat er niets
+			# uitgevoerd hoeft te worden.
+			LIST='1'
+			# Opzetten van de basis van de asci-art table
+			CleanReturn
+			Line
+			Row
+			CleanReturn
+			;;
+
+		# Debug versie zorgd er voor dat er niets wordt uitgevoeerd maar alleen getoond
+		'd')	# Variable DEBUG aan zetten
+			DEBUG='ON' ;;
+
+		# List genereren mat alle mogelijke longlisting argumenten. 
+		# Deze pak ik op uit het te uitvoeren script zodat bij het toevoegen of verwijderen van een extra
+		# logfile in de function SetVariable niet op meerdere plaartsen gedefineerd hoeft te worden.
+		'A')	#Ophalen van alle mogelijke OPTIONS
+			ALL=`cat ${0} |grep -v '#' |grep -m1 -A1000 'SetVariable' |grep -m1 -A1000 'case' |grep -m1 -B1000 'esac' |grep ')' |grep -v '#' |sed s/\'//g  |awk -F'\t' '{print$2}' |awk -F')' '{print$1}'`
+
+			# Controleren of er listing of rotate met checks of rotate geforceerd wordt opgevraagd
+			if [ "x${LIST}" == "x1" ] 	;then echo -ne ${ALL}
+			elif [ "x${ROTATE}" == "x1" ]	;then CHECK_LOG_NAME=`echo -ne ${ALL}`
+			elif [ "x${ROTATE}" == "x2" ]
+			then
+			# Indien rotate met controle (2) wordt aangevraagd wordt deze vanuit hier doorgezet
+			# naar de controle hiervan
+
+				# Voorloep om alle longlisting argumenten van variable te voorzoen en door de controlet te halen.
+				for OPTION in ${ALL}
+				do
+					SetVariable
+					FindToFilesToRotate
+				done
+			fi
+			;;
+
+		# Tonen van een asci-art table met alle mogelijke longlisting argumenten.
+		'L')	# Variable list wordt op 1 gezet zodat de restat van de functions weten dat er niets
+			# uitgevoerd hoeft te worden.
+			LIST='1'
+			# Opzetten van de basis van de asci-art table
+			CleanReturn
+			Line
+			Row
+			Line
+			
+			# Voorloep om alle aanwezige longlisting argumenten op te vragen en in de asci-art table te plaatsten
+			for OPTION in `cat ${0} |grep -v '#' |grep -m1 -A1000 'SetVariable' |grep -m1 -A1000 'case' |grep -m1 -B1000 'esac' |grep ')' |grep -v '#' |sed s/\'//g  |awk -F'\t' '{print$2}' |awk -F')' '{print$1}'`
+			do
+			SetVariable
+			done
+			;;
+
+		# Starten van de Help funtion.
+		'h')	Help
+			;;
+
+		# Starten van de Help funtion met extra voorbeelden (Examples).
+		'e')	Help
+			Examples
+			;;
+
+		# Accepteren van de longlisting argumenten
+		'-') 	# Variable OPTION voorzien van het longlisting argumetn.
+			if [[ ${OPTARG} = 'help' ]]
+			then
+				Help
+			elif [[ ${OPTARG} = 'example' ]]
+			then
+				Help
+				Examples
+			elif [[ ${OPTARG} = 'list' ]]
+			then
+				# uitgevoerd hoeft te worden.
+				LIST='1'
+				# Opzetten van de basis van de asci-art table
+				CleanReturn
+				Line
+				Row
+				CleanReturn
+			elif [[ ${OPTARG} = 'list-all' ]]
+			then
+				# uitgevoerd hoeft te worden.
+				LIST='1'
+				# Opzetten van de basis van de asci-art table
+				CleanReturn
+				Line
+				Row
+				Line
+				
+				# Voorloep om alle aanwezige longlisting argumenten op te vragen en in de asci-art table te plaatsten
+				for OPTION in `cat ${0} |grep -v '#' |grep -m1 -A1000 'SetVariable' |grep -m1 -A1000 'case' |grep -m1 -B1000 'esac' |grep ')' |grep -v '#' |sed s/\'//g  |awk -F'\t' '{print$2}' |awk -F')' '{print$1}'`
+				do
+				SetVariable
+				done
+			else
+				ALL=`cat ${0} |grep -v '#' |grep -m1 -A1000 'SetVariable' |grep -m1 -A1000 'case' |grep -m1 -B1000 'esac' |grep ')' |grep -v '#' |sed s/\'//g  |awk -F'\t' '{print$2}' |awk -F')' '{print$1" "}' |tr -d '[\n]'`
+				THIS_OPTARG=`echo ${ALL} |grep "${OPTARG}" |wc -l`
+				if [ "x${THIS_OPTARG}" != "x0" ]
+				then
+					OPTION=${OPTARG}
+				else
+					PrintInfo "ERROR : ${OPTARG} is onbekend"
+					PrintInfo "Options zijn: `echo ${ALL}`"
+					PrintInfo "Exit" 
+					exit 0
+				fi
+				# Ophalen van variable van het meegegeven longlisting argumetn.
+				SetVariable
+				# Controleren of alle variable daadwerkelijk gezet zijn.
+				FixVariable
+				# Indien rotate met controle is opgevraagde, deze informatie in printen.
+				# Indien rotate met controle is opgevraagde deze door de controlen heen halen.
+				if [ "x${ROTATE}" == "x2" ]
+				then
+					PrintInfo "${OPTION} wordt op size en ctime gecontroleerd en indien nodig geroteerd"
+					FindToFilesToRotate
+				fi
+				# Indien rotate zonder controle is opgevraagde, deze informatie in printen.
+				if [ "x${ROTATE}" == "x1" ]
+				then
+					PrintInfo "${OPTION} worden geforceerd geroteerd"
+				fi
+			fi
+			;;
+
+		# Type van rotatie aangeven (1 is geforceerd).
+		# Er worden geen controles gedaan of roteren van de logfile('s) werkelijk nodig is.
+		# Alle meegegeven longlisting argumenten worden geroteerd
+		'R')	# Zetten van ROTATE variable.
+			ROTATE='1'
+			;;	
+
+		# Type van rotatie aangeven (2 is met controle).
+		# Er worden eerst een controles gedaan of roteren van de logfile('s) werkelijk nodig is.
+		# Alle meegegeven longlisting argumenten worden eerst op vastgestelde waardes gecontroleerde
+		# en indien nodig blijkt zal de logfile daadwerkelijk geroteerd worden.
+		'r')	# Zetten van ROTATE variable
+			ROTATE='2'
+			;;
+	esac
+
+done
+#########################
+
+
+#########################
+
+# Controlten of er een listing is opgevraagd.
+if [ "x${LIST}" == "x1" ]
+then
+# Indien er een list is opgevraagd dient de asci-art table netjes afgesloten te worden
+	Line ;CleanReturn
+fi
+#########################
+
+
+#########################
+
+# Controleren of er een STOP (9) is geplaatst.
+# Deze wordt geplaatst op het moment dat er geen van de meegegeven longlisting variable na
+# controle (rotate methode 2) daadwerkelijk geroteerd hoeft te worden.
+if [ "x${STOP}" != "x9" ]
+then
+# Indein er geen Stop is geplaatst begind de rotatie.
+# Gezien de controle, of rotatie daadwerkelijk nodig is zit er geen verschil meer tussen de
+# geforseerde rotatie (ROTATE 1) en de rotatie waar eerst een controle op wordt gedaan of
+# rotatie daadwerkelijk nodig is (ROTATE 2). De variavle CHECK_LOG_NAME is ingeval van
+# controle voorzien van alle logfiles waar rotatie nodig is en in geval van geforceerde
+# rotatie is deze (CHECK_LOG_NAME) voorzien van alle meegegeven longlisting argumenten. 
+
+
+	# Controleren of er een rotate methode bekend is.
+	if [ "x${ROTATE}" == "x1" ] || [ "x${ROTATE}" == "x2" ]
+	then
+		# Indien deze bekend is begind de rotatie
+
+		# Eerste controle is de huidige load
+		# Hierbij wordt een 1 meegegeven om aan te geven dat alle mogelijke informatie geprint mag worden.
+		LoadCheck 1
+		# Controleren of de load binnen de gevraagde normen valt.
+		if [ ${?} -eq 0 ]
+		then
+		# Indien de load oke is bevonden wordt het volgende uitgevoerd.
+
+#			CHECK_NO_LOOP_CHECK_LOG_NAME=`echo "${CHECK_LOG_NAME}" |grep -v 'FSTtmp'`
+#			if [ "x${CHECK_NO_LOOP_CHECK_LOG_NAME}" != "x${CHECK_LOG_NAME}" ]
+#			then
+#				CHECK_LOG_NAME_tmp=`echo "${CHECK_LOG_NAME}" |grep -v 'FSTtmp'`
+#				CHECK_LOG_NAME=${CHECK_LOG_NAME_tmp}
+#				DO_CLEAN_FILESYSTEMTEMPLATE_TMP='1'
+#			else
+#				DO_CLEAN_FILESYSTEMTEMPLATE_TMP='0'
+#			fi
+#
+#			if [ "x${DO_CLEAN_FILESYSTEMTEMPLATE_TMP}" == "x1" ]
+#			then
+#				RemoveOldMigrations
+#			fi
+
+			# Voorloep met alle te roteren logfiles door de rotatie procedure stap 1.
+			for OPTION in ${CHECK_LOG_NAME}
+			do
+		   	 # Variable ROTATE leeg maken van waarde om in de funtions niet tegen problemen aan te
+		   	 # lopen. (Zoals de asci-art table)
+			 ROTATE=''
+			    # FSTtmp uit de rotate loop halen gezien dit een remove action is en geen rotate.
+			    if [ "${OPTION}" != "FSTtmp" ]
+			    then
+				# Voor elke file die geroteerd wordt zullen de volgende functions aangeroepen worden.
+
+				# Bij de load check wordt een 0 meegegeven. Dit geeft aan dat er niet keer op keer
+				# vermeld hoeft te worden dat er een load controle gestart wordt. Er wordt wel
+				# aangegven wanneerde load te hoog is en dat er een recheck wordt gedaaan.
+
+				# Het controleren van de huidige load.
+				LoadCheck 0
+				# Controleren of de load binnen de gevraagde normen valt.
+				if [ ${?} -eq 0 ]
+				then
+				# Indien de load oke is bevonden wordt het volgende uitgevoerd.
+
+					# Het ophalen van de benodigde variable.
+					SetVariable
+					# Het controleren of alle benodigde variable werkelijke gezet zijn.
+					FixVariable
+					# Bepalen van de rotate methode.
+					CheckMethod
+					# Eerste stap van de rotatie. 
+					RotateFirstStap
+				
+				else
+				# Indien de load niet oke is bevonden zal de rotate gestopt worden. Hier is al een email over verzonden.
+
+					PrintInfo "Load is to high"
+					PrintInfo "exit ${0}"
+					exit 0
+				fi
+			    fi
+
+			done
+			# Zodra de eerste stappen zijn gezet van de rotatie zullen de benodigde services gerestart/gereload dienen te worden.
+				# Voor de services gerestart/gereload worden starten we ook hier met een load check
+				# Indien de load niet oke wordt bevonden zal er een sleep starten van 1800 seconden daarna word er nog
+				# een load controle gedaan. Ongeacht het resultaad daarvan worden de services gerestart/gereload.
+				LoadCheck 0
+				# Controleren of de load binnen de gevraagde normen valt.
+				if [ ${?} -eq 0 ]
+				then
+				# Indien de load oke is bevonden wordt het volgende uitgevoerd.
+
+					# restarten/reloaden van de benodigde services
+					FlushInode
+				else
+				# Indien de load niet oke is bevonden zal de rotate gestopt worden. Hier is al een email over verzonden.
+
+					# sleep starten van 1800 seconden om de load wat te laten inzinken.
+					sleep 1800
+					LoadCheck 0
+					# restarten/reloaden van de benodigde services
+					FlushInode
+				fi
+			# Na het restarten/reloaden van de benodigde services beginnen we aan het roteren van de live logfiles
+			for OPTION in ${CHECK_LOG_NAME}
+			do
+				# Voor het afronden van elke file die geroteerd wordt zullen de volgende functions aangeroepen worden.
+
+				# Bij de load check wordt een 0 meegegeven. Dit geeft aan dat er niet keer op keer
+				# vermeld hoeft te worden dat er een load controle gestart wordt. Er wordt wel
+				# aangegven wanneerde load te hoog is en dat er een recheck wordt gedaaan.
+
+				# Het controleren van de huidige load.
+				LoadCheck 0
+				# Controleren of de load binnen de gevraagde normen valt.
+				if [ ${?} -eq 0 ]
+				then
+				# Indien de load oke is bevonden wordt het volgende uitgevoerd.
+				
+					# Het ophalen van de benodigde variable.
+					SetVariable
+					# Het controleren of alle benodigde variable werkelijke gezet zijn.
+					FixVariable
+					# FSTtmp uit de rotate loop halen gezien dit een remove action is en geen rotate.
+					if [ "${OPTION}" != "FSTtmp" ]
+					then
+						# Bepalen van de rotate methode.
+						CheckMethod
+						# Starten van de laatst stap van de rotatie. het zippen van de live file's
+						RotateFinalStap
+					else
+						# Verwijderen van ouder migratie files uit de filesystemtemplate tmp dit ouder zijn dat xx.
+						RemoveOldMigrations
+					fi
+				else
+				# Indien de load niet oke is bevonden zal de rotate gestopt worden. Hier is al een email over verzonden.
+
+					PrintInfo "Load is to high"
+					PrintInfo "exit ${0}"
+					exit 0
+				fi
+			done
+		
+		else
+		# Indien de load niet oke is bevonden zal de rotate gestopt worden. Hier is al een email over verzonden.
+
+			PrintInfo "Load is to high"
+			PrintInfo "exit ${0}"
+			exit 0
+		fi
+	fi
+else
+# Indien er geen file's zijn de regoteerd hoeven worden wordt de volgende informatie gegeven.
+	
+	PrintInfo "Geen van de opgegeven options zijn de moeite waard om te roteren"
+fi
+#########################
